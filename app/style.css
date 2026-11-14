@@ -1,0 +1,1172 @@
+/*
+ * TVDeck, tvOS-inspired: a Top Shelf that takes its color from the focused
+ * app, a dock row, and tiles that lift and catch light when focused.
+ *
+ * Sized for a 1920x1080 TV viewport; vw units keep desktop previews to scale.
+ * Targets Chromium 76 (Tizen 6): no flexbox `gap`, no `inset`.
+ * Keep GPU work small: one blurred layer (overlay card), no animated filters.
+ *
+ * Motion: only transform and opacity animate. --ease (decelerating, from the
+ * high-end-visual-design skill) for travel, --spring (slight overshoot) for
+ * focus, --press for the OK-button press-in.
+ */
+:root {
+  --bg: #000;
+  --fill: rgba(255, 255, 255, 0.1);
+  --fill-strong: rgba(255, 255, 255, 0.16);
+  --tile-base: #2c2c2e;
+  --text: #fff;
+  --text-2: rgba(235, 235, 245, 0.62);
+  --text-3: rgba(235, 235, 245, 0.38);
+
+  --font: "SamsungOne", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+
+  --edge: 5.2vw;
+  --gap: 2.1vw;
+  --tile-w: 15.9vw;
+  --tile-h: 9.55vw;
+  --radius: 0.7vw;
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --spring: cubic-bezier(0.34, 1.32, 0.64, 1);
+  --press: cubic-bezier(0.4, 0, 0.6, 1);
+  --sine: cubic-bezier(0.45, 0, 0.55, 1);
+  --ease-in: cubic-bezier(0.5, 0, 0.75, 0); /* exits: accelerate away, faster than entrances */
+  --t-focus: 480ms;
+  --t-travel: 650ms;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Backdrop: color wash from the focused app, fading to black */
+.backdrop {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 0;
+  background: #0b0b0d;
+}
+
+.wash {
+  position: absolute;
+  top: -10%;
+  left: -10%;
+  width: 120%;
+  height: 120%;
+  opacity: 0;
+  transition: opacity 1100ms var(--ease);
+  animation: drift 26s var(--sine) infinite alternate;
+}
+
+/* The wash never sits still: a slow drift and swell, like light moving */
+@keyframes drift {
+  from { transform: translate(-3%, -2%) scale(1); }
+  to { transform: translate(3%, 2.5%) scale(1.1); }
+}
+
+.backdrop-shade {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(180deg,
+    rgba(0, 0, 0, 0.05) 0%,
+    rgba(0, 0, 0, 0.35) 30%,
+    rgba(0, 0, 0, 0.85) 55%,
+    #000 75%);
+}
+
+.viewport {
+  position: fixed;
+  z-index: 1;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  overflow: hidden;
+}
+
+.page {
+  transition: transform var(--t-travel) var(--ease);
+  will-change: transform;
+}
+
+/* Top Shelf */
+.shelf {
+  position: relative;
+  height: 46vh;
+}
+
+/* Fixed top bar: stays put while the page scrolls under it */
+.topbar {
+  position: fixed;
+  z-index: 3;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 2.3vw var(--edge) 0;
+  pointer-events: none;
+  transition: opacity 900ms var(--ease);
+}
+
+.topbar > * { pointer-events: auto; }
+
+.shelf-status { text-align: right; }
+
+/* Scrolled: the bar condenses to time and weather */
+.shelf-status .date,
+.shelf-status .ticker {
+  max-height: 1.6vw;
+  overflow: hidden;
+  transition: opacity 300ms var(--ease), max-height 450ms var(--ease), margin 450ms var(--ease);
+}
+
+body.scrolled .shelf-status .date,
+body.scrolled .shelf-status .ticker {
+  min-height: 0;
+  max-height: 0;
+  margin-top: 0;
+  opacity: 0;
+}
+
+/* Quick access, reached with Up from the dock */
+.nav { display: flex; align-items: center; }
+
+/* Brand mark: decorative, not focusable, sized to the buttons */
+.nav-brand {
+  width: 2.3vw;
+  height: 2.3vw;
+  margin-right: 1.1vw;
+}
+
+.nav-btn {
+  display: flex;
+  align-items: center;
+  margin-right: 0.8vw;
+  padding: 0.5vw 1.1vw 0.5vw 0.85vw;
+  border-radius: 2vw;
+  font-size: 0.95vw;
+  font-weight: 500;
+  color: var(--text-2);
+  background: rgba(255, 255, 255, 0.08);
+  transition: transform 420ms var(--spring), background-color 250ms var(--ease), color 250ms var(--ease);
+}
+
+.nav-icon {
+  width: 1.15vw;
+  height: 1.15vw;
+  margin-right: 0.5vw;
+}
+
+.nav-icon svg { display: block; width: 100%; height: 100%; }
+
+.nav-btn.focused {
+  color: #000;
+  background: rgba(255, 255, 255, 0.94);
+  transform: scale(1.06);
+  box-shadow: 0 0.6vw 1.4vw rgba(0, 0, 0, 0.3);
+}
+
+.clock {
+  font-size: 1.8vw;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.date,
+.weather,
+.ticker {
+  margin-top: 0.3vw;
+  font-size: 0.95vw;
+  color: var(--text-2);
+}
+
+.weather-temp {
+  margin-right: 0.4vw;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.ticker {
+  max-width: 24vw;
+  min-height: 1.3em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ticker.tick { animation: tick 700ms var(--ease); }
+
+@keyframes tick {
+  from { opacity: 0; transform: translateY(0.6vw); }
+  to { opacity: 1; transform: none; }
+}
+
+.shelf-info {
+  position: absolute;
+  left: var(--edge);
+  right: 40vw;
+  bottom: 2.2vw;
+}
+
+.shelf-kind {
+  font-size: 0.8vw;
+  font-weight: 500;
+  letter-spacing: 0.1vw;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.shelf-title {
+  margin: 0.4vw 0 0.35vw;
+  font-size: 3.3vw;
+  font-weight: 600;
+  letter-spacing: -0.022em;
+  line-height: 1.05;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shelf-meta {
+  font-size: 1.2vw;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Rows */
+.row { padding-bottom: 0.4vw; }
+
+.row-title {
+  margin: 0 0 0.9vw var(--edge);
+  font-size: 1.1vw;
+  font-weight: 500;
+  color: var(--text-3);
+  transition: color 400ms var(--ease);
+}
+
+.row.active .row-title { color: var(--text); }
+
+.row-track {
+  display: flex;
+  padding: 0.6vw var(--edge) 3.4vw;
+  transition: transform var(--t-travel) var(--ease), opacity 500ms var(--ease);
+}
+
+.row-track > * + * { margin-left: var(--gap); }
+
+/* Depth: rows you are not on recede a little */
+.row:not(.active) .row-track {
+  opacity: 0.62;
+}
+
+.row-empty {
+  margin: 0.6vw var(--edge) 3.4vw;
+  font-size: 1.15vw;
+  color: var(--text-3);
+}
+
+/* Tiles */
+.tile {
+  position: relative;
+  flex: 0 0 var(--tile-w);
+  height: var(--tile-h);
+  transition: transform var(--t-focus) var(--spring);
+}
+
+/* Soft lift shadow: its own layer so only opacity animates, never box-shadow */
+.tile::before {
+  content: "";
+  position: absolute;
+  top: 12%;
+  left: 6%;
+  right: 6%;
+  bottom: -6%;
+  border-radius: var(--radius);
+  box-shadow: 0 1.4vw 2.8vw rgba(0, 0, 0, 0.42), 0 0.3vw 0.8vw rgba(0, 0, 0, 0.22);
+  opacity: 0;
+  transition: opacity var(--t-focus) var(--ease);
+}
+
+.tile-art {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: var(--fill);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: background-color var(--t-focus) var(--ease);
+}
+
+.tile.has-art .tile-art { background: var(--tile-base); }
+
+/* Hairline edge drawn over the art, so dark artwork keeps its shape */
+.tile-art::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: var(--radius);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+  pointer-events: none;
+}
+
+.tile-icon {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  margin: auto;
+  max-width: 62%;
+  max-height: 62%;
+  opacity: 0;
+  transition: opacity 600ms var(--ease);
+}
+
+/* Icons fade in once decoded instead of popping */
+.tile-icon.loaded { opacity: 1; }
+
+.tile.full-bleed .tile-icon {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: cover;
+}
+
+.tile-glyph {
+  position: absolute;
+  top: 22%;
+  left: 0;
+  right: 0;
+  height: 2.6vw;
+  text-align: center;
+  color: var(--text-2);
+}
+
+.tile-glyph svg { width: 2.6vw; height: 2.6vw; }
+
+.tile-label {
+  position: absolute;
+  left: 0.8vw;
+  right: 0.8vw;
+  bottom: 1.15vw;
+  font-size: 1.05vw;
+  font-weight: 500;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Light sheen: a soft, broad highlight (no hard band) that drifts in on focus */
+.tile-shine {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 220%;
+  opacity: 0;
+  background: linear-gradient(115deg,
+    rgba(255, 255, 255, 0) 22%,
+    rgba(255, 255, 255, 0.035) 34%,
+    rgba(255, 255, 255, 0.09) 42%,
+    rgba(255, 255, 255, 0.035) 50%,
+    rgba(255, 255, 255, 0) 62%);
+  transform: translateX(-62%);
+  transition: opacity 300ms var(--ease), transform 0s 300ms;
+}
+
+.tile-caption {
+  position: absolute;
+  top: 100%;
+  left: -1vw;
+  right: -1vw;
+  margin-top: 0.75vw;
+  font-size: 1.05vw;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  transform: translateY(-0.4vw);
+  transition: opacity 300ms var(--ease), transform var(--t-focus) var(--ease);
+}
+
+.tile:not(.has-art) .tile-caption { display: none; }
+
+.tile.focused {
+  z-index: 2;
+  transform: scale(1.085);
+  will-change: transform;
+}
+
+.tile.focused::before { opacity: 1; }
+.tile.focused:not(.has-art) .tile-art { background: var(--fill-strong); }
+.tile.focused .tile-glyph { color: var(--text); }
+
+.tile.focused .tile-shine {
+  opacity: 0.8;
+  transform: translateX(-22%);
+  transition: opacity 600ms var(--ease), transform 1800ms var(--ease);
+}
+
+.tile.focused .tile-caption {
+  opacity: 1;
+  transform: none;
+}
+
+/* OK pressed: quick press-in, then the spring brings it back */
+.tile.focused.pressed {
+  transform: scale(1.03);
+  transition: transform 110ms var(--press);
+}
+
+/* Momentum: focus arriving from a direction overshoots slightly, then settles */
+.tile.nudge-right .tile-art { animation: nudge-right 520ms var(--ease); }
+.tile.nudge-left .tile-art { animation: nudge-left 520ms var(--ease); }
+.tile.nudge-down .tile-art { animation: nudge-down 520ms var(--ease); }
+.tile.nudge-up .tile-art { animation: nudge-up 520ms var(--ease); }
+
+@keyframes nudge-right { from { transform: translateX(-0.9vw); } to { transform: none; } }
+@keyframes nudge-left { from { transform: translateX(0.9vw); } to { transform: none; } }
+@keyframes nudge-down { from { transform: translateY(-0.7vw); } to { transform: none; } }
+@keyframes nudge-up { from { transform: translateY(0.7vw); } to { transform: none; } }
+
+/* Edge: pushing past the end of a row bumps against it */
+.tile.bump-right .tile-art { animation: bump-right 420ms var(--ease); }
+.tile.bump-left .tile-art { animation: bump-left 420ms var(--ease); }
+.tile.bump-down .tile-art { animation: bump-down 420ms var(--ease); }
+.tile.bump-up .tile-art { animation: bump-up 420ms var(--ease); }
+
+@keyframes bump-right { 30% { transform: translateX(0.7vw); } to { transform: none; } }
+@keyframes bump-left { 30% { transform: translateX(-0.7vw); } to { transform: none; } }
+@keyframes bump-down { 30% { transform: translateY(0.55vw); } to { transform: none; } }
+@keyframes bump-up { 30% { transform: translateY(-0.55vw); } to { transform: none; } }
+
+/* Idle: the focused tile barely breathes; a faint light passes now and then */
+body.idle .tile.focused .tile-art { animation: float 6.5s var(--sine) infinite alternate; }
+body.idle .tile.focused .tile-shine { animation: glint 12s var(--sine) 1s infinite; }
+
+@keyframes float {
+  from { transform: translateY(0); }
+  to { transform: translateY(-0.12vw); }
+}
+
+/* One slow pass left to right, then the resting highlight fades back in */
+@keyframes glint {
+  0% { opacity: 0.8; transform: translateX(-22%); }
+  6% { opacity: 0; transform: translateX(-22%); }
+  7% { opacity: 0; transform: translateX(-62%); }
+  24% { opacity: 0.55; transform: translateX(-20%); }
+  40% { opacity: 0; transform: translateX(18%); }
+  41% { opacity: 0; transform: translateX(-22%); }
+  52% { opacity: 0.8; transform: translateX(-22%); }
+  100% { opacity: 0.8; transform: translateX(-22%); }
+}
+
+.tile.moving { animation: jiggle 260ms var(--press) infinite alternate; }
+
+@keyframes jiggle {
+  from { transform: scale(1.085) rotate(-1deg); }
+  to { transform: scale(1.085) rotate(1deg); }
+}
+
+/* At-a-glance cards */
+.row.glance .tile {
+  flex-basis: 23vw;
+  height: 11vw;
+  padding: 1.2vw 1.4vw;
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: var(--fill);
+}
+
+.row.glance .tile {
+  transition: transform var(--t-focus) var(--spring), background-color var(--t-focus) var(--ease);
+}
+
+.row.glance .tile.focused {
+  background: var(--fill-strong);
+  transform: scale(1.06);
+}
+
+.glance-title {
+  font-size: 0.8vw;
+  font-weight: 500;
+  letter-spacing: 0.08vw;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.glance-big {
+  margin-top: 0.7vw;
+  font-size: 1.85vw;
+  font-weight: 600;
+  letter-spacing: -0.03vw;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row.glance .tile.pressed { transform: scale(1.0); transition: transform 110ms var(--press); }
+
+.glance-dim {
+  margin-top: 0.3vw;
+  font-size: 1vw;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row.glance .tile.is-on { background: rgba(255, 214, 10, 0.2); }
+
+.glance-events { margin-top: 0.7vw; }
+
+.glance-event {
+  display: flex;
+  font-size: 1.05vw;
+  line-height: 1.7;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.glance-when {
+  flex: 0 0 7.2vw;
+  color: var(--text-2);
+}
+
+.glance-what {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Black fade at the top so scrolled rows slide under the hints */
+.topfade {
+  position: fixed;
+  z-index: 2;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 7.5vw;
+  opacity: 0;
+  background: linear-gradient(180deg, #000 45%, rgba(0, 0, 0, 0));
+  pointer-events: none;
+  transition: opacity 300ms;
+}
+
+body.scrolled .topfade { opacity: 1; }
+
+.bottomfade {
+  position: fixed;
+  z-index: 2;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4.5vw;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0));
+  pointer-events: none;
+}
+
+/* Remote-key hints, kept faint */
+.hints {
+  position: fixed;
+  z-index: 3;
+  left: var(--edge);
+  bottom: 1.4vw;
+  display: flex;
+  font-size: 0.85vw;
+  color: var(--text-3);
+}
+
+.hint { display: flex; align-items: center; }
+.hint + .hint { margin-left: 2vw; }
+
+.hint .key {
+  width: 0.6vw;
+  height: 0.6vw;
+  margin-right: 0.5vw;
+  border-radius: 50%;
+}
+
+.key.red { background: #ff453a; }
+.key.green { background: #30d158; }
+.key.yellow { background: #ffd60a; }
+.key.blue { background: #0a84ff; }
+
+/* Toast: top-right banner */
+.toast {
+  position: fixed;
+  z-index: 3;
+  top: 2.4vw;
+  right: var(--edge);
+  padding: 0.9vw 1.5vw;
+  border-radius: 1.6vw;
+  font-size: 1.05vw;
+  font-weight: 500;
+  background: rgba(44, 44, 46, 0.95);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 1vw 2.4vw rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-1vw) scale(0.96);
+  transition: opacity 200ms var(--ease-in), transform 220ms var(--ease-in);
+}
+
+.toast.show {
+  opacity: 1;
+  transform: none;
+  transition: opacity 350ms var(--ease), transform 600ms var(--spring);
+}
+
+/* Settings: tvOS split layout, focused row turns white */
+.settings {
+  position: fixed;
+  z-index: 3;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.74) 0%, rgba(0, 0, 0, 0.84) 34%, rgba(0, 0, 0, 0.9) 100%);
+}
+
+.settings { transition: opacity 420ms var(--ease); }
+
+/* The launcher sinks back behind the settings sheet */
+body.sheet-on .viewport {
+  opacity: 0.22;
+  transform: scale(0.96);
+}
+
+.settings.is-out {
+  opacity: 0;
+  transition: opacity 240ms var(--ease-in);
+}
+
+.settings-side {
+  transition: transform 700ms var(--ease);
+  flex: 0 0 38%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-2);
+}
+
+.settings.is-out .settings-side {
+  transform: translateX(-2vw);
+  transition: transform 240ms var(--ease-in);
+}
+
+.settings-glyph {
+  width: 8.5vw;
+  height: 8.5vw;
+  padding: 2vw;
+  border-radius: 1.9vw;
+  background: linear-gradient(180deg, #3a3a3c, #1c1c1e);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.settings-glyph svg { width: 100%; height: 100%; }
+
+/* Settings menu: the TVDeck mark sits on its own, no tile behind it */
+.settings-glyph.is-brand {
+  padding: 0.6vw;
+  background: none;
+  box-shadow: none;
+}
+
+.settings-glyph img { display: block; width: 100%; height: 100%; }
+
+.settings-side h2 {
+  margin: 1.5vw 0 0.3vw;
+  font-size: 1.8vw;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text);
+}
+
+.settings-side p {
+  max-width: 22vw;
+  margin: 0;
+  font-size: 0.95vw;
+  text-align: center;
+}
+
+/* Page change: the left column cross-fades, the list slides in */
+.settings-side.page-swap > * { animation: fade-in 450ms var(--ease) both; }
+.settings-panel.page-forward { animation: page-forward 420ms var(--ease) both; }
+.settings-panel.page-back { animation: page-back 420ms var(--ease) both; }
+
+@keyframes page-forward {
+  from { opacity: 0; transform: translateX(2.4vw); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes page-back {
+  from { opacity: 0; transform: translateX(-2.4vw); }
+  to { opacity: 1; transform: none; }
+}
+
+.settings-panel {
+  flex: 0 0 44vw;
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  /* Rows fade out at the edges instead of being cut */
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 9%, #000 91%, transparent 100%);
+  mask-image: linear-gradient(180deg, transparent 0, #000 9%, #000 91%, transparent 100%);
+}
+
+/* The list glides (transform) to keep the focused row in view */
+.settings-list {
+  padding: 9vh 1.2vw;
+  transition: transform 550ms var(--ease);
+}
+
+.setting-section {
+  margin: 1.8vw 0 0.5vw 1.1vw;
+  font-size: 0.75vw;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.settings-list > :first-child { margin-top: 0; }
+
+.setting {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.25vw;
+  padding: 0.75vw 1.1vw;
+  border-radius: 0.6vw;
+  font-size: 1.05vw;
+  font-weight: 400;
+  background: rgba(255, 255, 255, 0.07);
+  transition: transform 420ms var(--spring), background-color 250ms var(--ease), color 250ms var(--ease);
+}
+
+.settings.opening .setting,
+.settings.opening .setting-section {
+  animation: slide-in 650ms var(--ease) both;
+  animation-delay: calc(80ms + var(--i, 0) * 28ms);
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(4vw); }
+  to { opacity: 1; transform: none; }
+}
+
+.setting.focused {
+  color: #000;
+  background: rgba(255, 255, 255, 0.94);
+  transform: scale(1.015);
+  box-shadow: 0 0.6vw 1.4vw rgba(0, 0, 0, 0.3);
+}
+
+.setting-section:empty { margin: 0.6vw 0 0; }
+
+/* Menu rows lead to a page */
+.setting-link::after {
+  content: "\203A";
+  margin-left: 0.8vw;
+  font-size: 1.35vw;
+  line-height: 1;
+  color: var(--text-3);
+}
+
+.setting-link .setting-value { margin-left: auto; }
+.setting.focused.setting-link::after { color: rgba(0, 0, 0, 0.4); }
+
+.setting-value {
+  margin-left: 1vw;
+  color: var(--text-2);
+}
+
+.setting.focused .setting-value { color: rgba(0, 0, 0, 0.55); }
+
+.setting input {
+  width: 18vw;
+  padding: 0;
+  border: 0;
+  font: inherit;
+  text-align: right;
+  color: var(--text-2);
+  background: transparent;
+  outline: none;
+}
+
+.setting.focused input { color: #000; }
+
+/* Unavailable rows: dimmed, skipped by focus, reason shown as the value */
+.setting.is-disabled { color: var(--text-3); background: rgba(255, 255, 255, 0.03); }
+.setting.is-disabled .setting-value { color: var(--text-3); }
+.setting.is-disabled input { color: var(--text-3); }
+
+/* Guidance under a page, in place of error toasts */
+.setting-note {
+  margin: 0.9vw 1.1vw 0;
+  font-size: 0.9vw;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+/* Inline selector: Left/Right moves the highlight */
+.choice-options { display: flex; }
+
+.tile, .setting, .choice-option { cursor: default; }
+
+.choice-option {
+  margin-left: 0.35vw;
+  padding: 0.25vw 0.75vw;
+  border-radius: 1vw;
+  font-size: 0.9vw;
+  color: var(--text-2);
+  transition: background-color 250ms var(--ease), color 250ms var(--ease);
+}
+
+.choice-option.selected {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.setting.focused .choice-option { color: rgba(0, 0, 0, 0.5); }
+.setting.focused .choice-option.selected { color: #fff; background: #1c1c1e; }
+.setting.is-disabled .choice-option.selected { color: var(--text-3); background: rgba(255, 255, 255, 0.06); }
+
+/* Destructive row reads red once focused */
+.setting-danger.focused { color: #d70015; }
+
+/* Overlays: frosted card */
+.overlay {
+  position: fixed;
+  z-index: 3;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  transition: opacity 320ms var(--ease);
+}
+
+.overlay.is-out {
+  opacity: 0;
+  transition: opacity 220ms var(--ease-in) 40ms;
+}
+
+.overlay-card {
+  max-width: 60vw;
+  padding: 3vw 3.4vw;
+  border-radius: 1.6vw;
+  font-size: 1.15vw;
+  background: rgba(44, 44, 46, 0.86);
+  -webkit-backdrop-filter: blur(40px);
+  backdrop-filter: blur(40px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 2.4vw 5vw rgba(0, 0, 0, 0.6);
+  transition: transform 600ms var(--spring), opacity 320ms var(--ease);
+}
+
+.overlay.is-out .overlay-card {
+  opacity: 0;
+  transform: translateY(1.2vw) scale(0.96);
+  transition: transform 220ms var(--ease-in), opacity 200ms var(--ease-in);
+}
+
+.overlay-card h2 {
+  margin: 0 0 1.8vw;
+  font-size: 2vw;
+  font-weight: 600;
+  letter-spacing: -0.03vw;
+}
+
+.phone-body { display: flex; align-items: center; }
+
+.qr {
+  flex: 0 0 auto;
+  width: 14vw;
+  height: 14vw;
+  margin-right: 3vw;
+  padding: 0.7vw;
+  border-radius: 1vw;
+  background: #fff;
+}
+
+.qr svg { display: block; width: 100%; height: 100%; }
+
+.phone-info p {
+  margin: 0 0 0.5vw;
+  color: var(--text-2);
+}
+
+.phone-info .phone-url {
+  margin-bottom: 1.6vw;
+  font-size: 1.7vw;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.phone-info .phone-pin {
+  margin-bottom: 1.6vw;
+  font-size: 2.8vw;
+  font-weight: 500;
+  letter-spacing: 0.35em;
+  color: var(--text);
+}
+
+.message-url {
+  color: var(--text);
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.message-text {
+  font-size: 2vw;
+  font-weight: 500;
+}
+
+[hidden] { display: none !important; }
+
+/* Shelf title glides in when focus moves to a different tile */
+.shelf-info.swap { animation: shelf-in 520ms var(--ease) both; }
+
+@keyframes shelf-in {
+  from { opacity: 0; transform: translateY(0.8vw); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Boot: shelf, rows and tiles rise in, staggered */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(2.6vw); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+body.booting .topbar { animation: fade-in 1200ms var(--ease) both; }
+body.booting .shelf-info { animation: rise 1000ms var(--ease) 80ms both; }
+
+body.booting .row {
+  animation: rise 1000ms var(--ease) both;
+  animation-delay: calc(200ms + var(--r, 0) * 110ms);
+}
+
+body.booting .tile-art {
+  animation: fade-in 900ms var(--ease) both;
+  animation-delay: calc(240ms + var(--r, 0) * 110ms + var(--i, 0) * 60ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0s !important;
+    transition-duration: 1ms !important;
+  }
+}
+
+/* Ambient screen: launcher fades away, the wash drifts through app colors */
+.ambient {
+  position: fixed;
+  z-index: 4;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  transition: opacity 1400ms var(--ease);
+}
+
+.ambient.is-out {
+  opacity: 0;
+  transition: opacity 450ms var(--ease-in);
+}
+
+.ambient-content {
+  position: absolute;
+  left: var(--edge);
+  bottom: 6vw;
+  animation: wander 60s var(--sine) infinite alternate;
+}
+
+/* Slow wander keeps static pixels moving on the panel */
+@keyframes wander {
+  from { transform: translate(0, 0); }
+  to { transform: translate(3vw, -2.5vw); }
+}
+
+.ambient-clock {
+  font-size: 9vw;
+  font-weight: 300;
+  letter-spacing: -0.035em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.ambient-date {
+  margin-top: 0.8vw;
+  font-size: 1.6vw;
+  font-weight: 400;
+}
+
+.ambient-line {
+  margin-top: 0.5vw;
+  font-size: 1.3vw;
+  color: var(--text-2);
+}
+
+.viewport { transition: opacity 700ms var(--ease), transform 700ms var(--ease); }
+
+.hints,
+.topfade { transition: opacity 900ms var(--ease); }
+
+body.ambient-on .viewport,
+body.ambient-on .hints,
+body.ambient-on .topbar,
+body.ambient-on .topfade { opacity: 0; }
+
+.backdrop-shade { transition: opacity 1400ms var(--ease); }
+body.ambient-on .backdrop-shade { opacity: 0.45; }
+body.ambient-on .wash { transition-duration: 3500ms; }
+
+/* Overlays push the launcher back too */
+body.sheet-on .hints { opacity: 0.4; }
+
+/* Hints step aside once you stop pressing keys; any key brings them back */
+body.calm .hints { opacity: 0; }
+
+/* Hold-to-scroll: while an arrow repeats, motion gets short and simple */
+body.fast {
+  --t-focus: 140ms;
+  --t-travel: 200ms;
+}
+
+body.fast .tile .tile-art,
+body.fast .tile .tile-icon { animation: none !important; }
+body.fast .tile.focused .tile-shine { transition: opacity 150ms var(--ease); }
+body.fast .shelf-info.swap { animation-duration: 160ms; }
+body.fast .tile-caption { transition-duration: 120ms; }
+
+/* Parallax: a logo lags behind its tile a touch, so the tile reads as layered */
+.tile:not(.full-bleed).nudge-right .tile-icon { animation: parallax-x 700ms var(--ease); --from: 0.45vw; }
+.tile:not(.full-bleed).nudge-left .tile-icon { animation: parallax-x 700ms var(--ease); --from: -0.45vw; }
+.tile:not(.full-bleed).nudge-down .tile-icon { animation: parallax-y 700ms var(--ease); --from: 0.35vw; }
+.tile:not(.full-bleed).nudge-up .tile-icon { animation: parallax-y 700ms var(--ease); --from: -0.35vw; }
+
+@keyframes parallax-x { from { transform: translateX(var(--from)); } to { transform: none; } }
+@keyframes parallax-y { from { transform: translateY(var(--from)); } to { transform: none; } }
+
+/* Idle depth: the logo floats a hair more than its tile */
+body.idle .tile.focused:not(.full-bleed) .tile-icon { animation: float-deep 6.5s var(--sine) infinite alternate; }
+
+@keyframes float-deep {
+  from { transform: translateY(0) scale(1); }
+  to { transform: translateY(-0.1vw) scale(1.015); }
+}
+
+/* The top bar steps back behind sheets like the rest of the launcher */
+body.sheet-on .topbar { opacity: 0.22; }
+
+/* Overlay buttons (tvOS alert style): Left/Right to choose, OK to confirm */
+.overlay-text {
+  margin: -0.8vw 0 0;
+  color: var(--text-2);
+}
+
+.overlay-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 2vw;
+}
+
+.overlay-btn {
+  min-width: 9vw;
+  margin: 0 0.45vw;
+  padding: 0.75vw 1.6vw;
+  border-radius: 0.7vw;
+  font-size: 1.05vw;
+  font-weight: 500;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.1);
+  transition: transform 420ms var(--spring), background-color 250ms var(--ease), color 250ms var(--ease);
+}
+
+.overlay-btn.focused {
+  color: #000;
+  background: rgba(255, 255, 255, 0.94);
+  transform: scale(1.06);
+  box-shadow: 0 0.6vw 1.4vw rgba(0, 0, 0, 0.3);
+}
+
+/* Loading mark: only appears if the first load is slow (see launcher.js).
+   It breathes while loading, then fades as the home screen comes in. */
+.splash {
+  position: fixed;
+  z-index: 5;
+  top: 50%;
+  left: 50%;
+  width: 9vw;
+  height: 9vw;
+  margin: -4.5vw 0 0 -4.5vw;
+  opacity: 0;
+  transform: scale(0.94);
+  pointer-events: none;
+  transition: opacity 450ms var(--ease-in), transform 500ms var(--ease-in);
+}
+
+.splash img { display: block; width: 100%; height: 100%; }
+
+body.loading .splash {
+  opacity: 1;
+  transform: none;
+  transition: opacity 600ms var(--ease), transform 700ms var(--ease);
+}
+
+body.loading .splash img { animation: breathe 2.4s var(--sine) infinite alternate; }
+
+@keyframes breathe {
+  from { transform: scale(1); opacity: 1; }
+  to { transform: scale(1.035); opacity: 0.85; }
+}
+
+/* While loading, the launcher stays out of view behind the mark */
+body.loading .viewport,
+body.loading .topbar,
+body.loading .hints { opacity: 0; }
